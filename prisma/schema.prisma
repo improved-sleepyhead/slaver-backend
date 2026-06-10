@@ -1,0 +1,170 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("POSTGRES_URL")
+}
+
+// Статусы дефекта по ТЗ: Новая → В работе → На проверке → Закрыта/Отменена
+enum DefectStatus {
+  NEW           // Новая
+  IN_PROGRESS   // В работе
+  ON_CHECK      // На проверке (важный этап для стройки)
+  CLOSED        // Закрыта
+  CANCELED      // Отменена
+}
+
+// Приоритет дефекта
+enum DefectPriority {
+  LOW           // Малозначительный
+  MEDIUM        // Значительный
+  HIGH          // Критический
+}
+
+// Глобальные роли в системе (например, Администратор всей платформы vs Обычный сотрудник)
+enum GlobalRole {
+  ADMIN
+  USER
+}
+
+// Роли на конкретном объекте (по ТЗ)
+enum ProjectRole {
+  MANAGER       // Менеджер: Назначение задач, контроль, отчеты
+  ENGINEER      // Инженер: Регистрация, устранение
+  OBSERVER      // Наблюдатель/Заказчик: Только просмотр
+}
+
+model User {
+  id        String       @id @default(cuid())
+  email     String       @unique
+  password  String
+  name      String
+  role      GlobalRole   @default(USER)
+
+  // Связи
+  projectsOwned    Project[]     @relation("ProjectOwner")
+  projectMemberships ProjectUser[] @relation("UserProjects") // Участие в проектах с ролями
+  
+  defectsAssigned  Defect[]      @relation("DefectAssignee") // Назначенные дефекты
+  defectsReported  Defect[]      @relation("DefectReporter") // Созданные дефекты (автор)
+  
+  comments         Comment[]     @relation("UserComments")
+  tokens           Token[]       @relation("UserTokens")
+  logs             Log[]         @relation("UserLogs")
+  uploads          Attachment[]  @relation("UserAttachments")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+}
+
+model Project {
+  id          String        @id @default(cuid())
+  name        String        // Название объекта
+  description String?       // Описание
+  address     String?       // Адрес строительного объекта
+  customer    String?       // Наименование Заказчика (юр. лицо)
+  
+  startDate   DateTime?     @map("start_date")
+  endDate     DateTime?     @map("end_date")
+
+  ownerId     String        @map("owner_id")
+  owner       User          @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+
+  members     ProjectUser[] @relation("ProjectMembers")
+  defects     Defect[]      @relation("ProjectDefects")
+
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+}
+
+// Таблица связка Пользователь <-> Проект с указанием Роли на объекте
+model ProjectUser {
+  userId    String      @map("user_id")
+  user      User        @relation("UserProjects", fields: [userId], references: [id], onDelete: Cascade)
+
+  projectId String      @map("project_id")
+  project   Project     @relation("ProjectMembers", fields: [projectId], references: [id], onDelete: Cascade)
+
+  role      ProjectRole @default(ENGINEER)
+
+  @@id([userId, projectId])
+}
+
+model Defect {
+  id          String         @id @default(cuid())
+  title       String         // Заголовок дефекта
+  description String?        // Описание проблемы
+  location    String?        // Локация (напр. "2 этаж, ось А-4")
+  
+  status      DefectStatus   @default(NEW)
+  priority    DefectPriority @default(MEDIUM)
+  dueDate     DateTime?      @map("due_date") // Срок устранения
+  
+  projectId   String         @map("project_id")
+  project     Project        @relation("ProjectDefects", fields: [projectId], references: [id], onDelete: Cascade)
+
+  assigneeId  String?        @map("assignee_id") // Кто устраняет (Инженер)
+  assignee    User?          @relation("DefectAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+
+  reporterId  String         @map("reporter_id") // Кто выявил (обычно Инженер технадзора или Менеджер)
+  reporter    User           @relation("DefectReporter", fields: [reporterId], references: [id], onDelete: Restrict)
+
+  comments    Comment[]      @relation("DefectComments")
+  attachments Attachment[]   @relation("DefectAttachments")
+
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+}
+
+model Attachment {
+  id        String   @id @default(cuid())
+  filename  String
+  url       String   // Публичная ссылка
+  key       String?  // Ключ в S3 (путь к файлу) <-- ДОБАВИТЬ ЭТО
+  mimeType  String?  @map("mime_type")
+
+  defectId  String   @map("defect_id")
+  defect    Defect   @relation("DefectAttachments", fields: [defectId], references: [id], onDelete: Cascade)
+
+  uploaderId String  @map("uploader_id")
+  uploader   User    @relation("UserAttachments", fields: [uploaderId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+}
+
+model Comment {
+  id        String     @id @default(cuid())
+  content   String
+
+  authorId  String     @map("author_id")
+  author    User       @relation("UserComments", fields: [authorId], references: [id], onDelete: Cascade)
+
+  defectId  String     @map("defect_id")
+  defect    Defect     @relation("DefectComments", fields: [defectId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime   @default(now()) @map("created_at")
+}
+
+model Token {
+  id        String     @id @default(cuid())
+  token     String     @unique
+  expiresAt DateTime
+
+  userId    String     @map("user_id")
+  user      User       @relation("UserTokens", fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime   @default(now()) @map("created_at")
+}
+
+model Log {
+  id        String     @id @default(cuid())
+  action    String     // Описание действия (напр. "Defect status changed to CLOSED")
+  details   Json?      // Доп. данные (было -> стало)
+
+  userId    String     @map("user_id")
+  user      User       @relation("UserLogs", fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime   @default(now()) @map("created_at")
+}
